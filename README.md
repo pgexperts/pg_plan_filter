@@ -41,3 +41,12 @@ To do this, run something like:
 
     ALTER USER can_run_expensive SET plan_filter.statement_cost_limit = 0;
     ALTER USER only_cheap_queries SET plan_filter.statement_cost_limit = 10000;
+
+Building and Installing
+-----------------------
+
+No configuration is required. Building and installing can be achieved
+like this:
+
+    export PATH=/path/to/pgconfig/directory:$PATH
+    make && make install
