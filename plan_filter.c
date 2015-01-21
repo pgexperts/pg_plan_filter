@@ -11,6 +11,8 @@ PG_MODULE_MAGIC;
 
 static double statement_cost_limit = 0.0;
 
+static bool module_loaded = false;
+
 static planner_hook_type prev_planner_hook = NULL;
 
 static PlannedStmt *limit_func(Query *parse,
@@ -40,6 +42,18 @@ _PG_init(void)
 							 NULL,
 							 NULL);
 
+	/* Define custom GUC variable. */
+	DefineCustomBoolVariable("plan_filter.module_loaded",
+							 "true if the module is loaded ",
+							 NULL,
+							 &module_loaded,
+							 true,
+							 PGC_BACKEND,
+							 0, /* no flags required */
+							 NULL,
+							 NULL,
+							 NULL);
+
 	/* install the hook */
 	prev_planner_hook = planner_hook;
 	planner_hook = limit_func;
@@ -54,6 +68,8 @@ _PG_fini(void)
 {
 	/* Uninstall hook. */
 	planner_hook = prev_planner_hook;
+	/* reset loaded var */
+	module_loaded = false;
 }
 
 static PlannedStmt *

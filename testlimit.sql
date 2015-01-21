@@ -23,8 +23,12 @@ end;
 
 $$;
 
+select coalesce((select setting::boolean from pg_settings where name = 'plan_filter.module_loaded'),false) as have_plan_filter_module;
+
 LOAD 'plan_filter';
 SET plan_filter.statement_cost_limit = 100000;
+
+select coalesce((select setting::boolean from pg_settings where name = 'plan_filter.module_loaded'),false) as have_plan_filter_module;
 
 -- should fail
 
