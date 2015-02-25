@@ -1,3 +1,6 @@
+# copyright 2012-2015 PostgreSQL Experts, Inc.
+# distributed under The PostgreSQL License
+# see License file for terms
 
 #include "postgres.h"
 
