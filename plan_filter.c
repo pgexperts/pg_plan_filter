@@ -1,9 +1,20 @@
-# copyright 2012-2015 PostgreSQL Experts, Inc.
-# distributed under The PostgreSQL License
-# see License file for terms
+/*-------------------------------------------------------------------------
+ *
+ * plan_filter.c
+ *
+ * Loadable PostgreSQL module to filter statements according to configured
+ * criteria and stop them before they start to run.
+ *
+ * The currently implemented criterion is the plan's estimated maximum cost.
+ *
+ * Copyright 2012-2015 PostgreSQL Experts, Inc.
+ *
+ * Distributed under The PostgreSQL License
+ * see License file for terms
+ *-------------------------------------------------------------------------
+ */
 
 #include "postgres.h"
-
 
 #include <float.h>
 
