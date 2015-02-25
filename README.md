@@ -50,3 +50,20 @@ like this:
 
     export PATH=/path/to/pgconfig/directory:$PATH
     make && make install
+
+Warnings
+--------
+
+This module will cancel plans based on their estimated cost.  The PostgreSQL 
+planner can and does return cost estimates which are unrelated to the actual
+query execution time.  As such, you should be prepared for "false positive"
+cancellations if you use pg_plan_filter, and you should set statement_cost_limit 
+to a fairly high threshold.
+
+Credits
+-------
+
+This module is primarly the work of Andrew Dunstan, with support from the 
+PostgreSQL Experts, Inc. staff.  
+
+Development of the module was sponsored by Twitch.TV. 
