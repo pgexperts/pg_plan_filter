@@ -72,7 +72,7 @@ generously.
 Credits
 -------
 
-This module is primarly the work of Andrew Dunstan, with support from the 
+This module is primarily the work of Andrew Dunstan, with support from the 
 PostgreSQL Experts, Inc. staff.
 
 Development of the module was sponsored by [Twitch.TV](http://www.twitch.tv). 
