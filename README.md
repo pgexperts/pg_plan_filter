@@ -1,12 +1,14 @@
 Plan Filter Module for PostgreSQL
 =================================
 
-This module will filter statements accoriding to certain configuration 
-criteria and if the criteria are not met raise an exception instead of 
-running the statements.
+This loadable module will test statements against specific configured criteria
+before execution, raising an error if the criteria are violated. This 
+allows administrators to prevent execution of certain queries on 
+production databases.
 
-Currently, to only criterion provided for is the maximum allowed estimated 
-cost of the statement plan.
+The only criterion currently supported is the maximum allowed estimated 
+cost of the statement plan.  However, `pg_plan_filter` could be extended to
+support a number of different filters.
 
 The module is loaded either via the `LOAD` statement or the 
 `shared_preload_libraries` setting in the `postgresql.conf` file. The latter 
@@ -50,20 +52,27 @@ like this:
 
     export PATH=/path/to/pgconfig/directory:$PATH
     make && make install
+    
+As `pg_plan_filter` is a loadable module rather than an Extension, it cannot be
+installed using PGXN or other extension-management tools.
+
+This module has been tested on PostgreSQL 9.1.14, 9.3.6 and 9.4.1.  It should work on
+any version 9.0 or later, but has not necessarily been tested on every release.
 
 Warnings
 --------
 
-This module will cancel plans based on their estimated cost.  The PostgreSQL 
+`statement_cost_limit` will cancel plans based on their estimated cost.  The PostgreSQL 
 planner can and does return cost estimates which are unrelated to the actual
 query execution time.  As such, you should be prepared for "false positive"
-cancellations if you use pg_plan_filter, and you should set statement_cost_limit 
-to a fairly high threshold.
+cancellations if you use `pg_plan_filter`, and you should set `statement_cost_limit` 
+generously.
+
 
 Credits
 -------
 
 This module is primarly the work of Andrew Dunstan, with support from the 
-PostgreSQL Experts, Inc. staff.  
+PostgreSQL Experts, Inc. staff.
 
-Development of the module was sponsored by Twitch.TV. 
+Development of the module was sponsored by [Twitch.TV](http://www.twitch.tv). 
