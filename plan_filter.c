@@ -97,7 +97,7 @@ limit_func(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	else
 		result = standard_planner(parse, cursorOptions, boundParams);
 
-	if (statement_cost_limit > 0.0 &&
+	if (parse->commandType == CMD_SELECT && statement_cost_limit > 0.0 &&
 		result->planTree->total_cost > statement_cost_limit)
 		ereport(ERROR,
 				(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
