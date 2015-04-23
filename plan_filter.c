@@ -77,7 +77,7 @@ _PG_init(void)
 							 "true turns this feature on (Default is false).",
 							 &filter_select_only,
 							 false,
-							 PGC_BACKEND,
+							 PGC_SUSET,
 							 0, /* no flags required */
 							 NULL,
 							 NULL,
