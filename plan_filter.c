@@ -27,6 +27,8 @@ static double statement_cost_limit = 0.0;
 
 static bool module_loaded = false;
 
+static bool filter_select_only = false;
+
 static planner_hook_type prev_planner_hook = NULL;
 
 static PlannedStmt *limit_func(Query *parse,
@@ -68,6 +70,19 @@ _PG_init(void)
 							 NULL,
 							 NULL);
 
+							/* Define custom GUC variable. */
+	DefineCustomBoolVariable("plan_filter.filter_select_only",
+							 "Limit the filter to SELECT queries "
+							 "only.",
+							 "true turns this feature on (Default is false).",
+							 &filter_select_only,
+							 false,
+							 PGC_SUSET,
+							 0, /* no flags required */
+							 NULL,
+							 NULL,
+							 NULL);
+
 	/* install the hook */
 	prev_planner_hook = planner_hook;
 	planner_hook = limit_func;
@@ -97,6 +112,9 @@ limit_func(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	else
 		result = standard_planner(parse, cursorOptions, boundParams);
 
+    if(filter_select_only && parse->commandType != CMD_SELECT)
+		return result;
+
 	if (statement_cost_limit > 0.0 &&
 		result->planTree->total_cost > statement_cost_limit)
 		ereport(ERROR,
@@ -110,5 +128,4 @@ limit_func(Query *parse, int cursorOptions, ParamListInfo boundParams)
 					  "\"plan_filter.statement_cost_limit\".")));
 
 	return result;
-
 }

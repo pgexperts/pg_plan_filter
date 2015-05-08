@@ -22,6 +22,13 @@ which means do not apply any filter. So a typical pair of settings in the
     shared_preload_libraries = 'plan_filter'
     plan_filter.statement_cost_limit = 100000.0
 
+`ļimit_select_only` limits filtering to SELECT statements only. The default is false.
+
+    plan_filter.limit_select_only = true
+
+turns it on.
+Be aware that SELECT != READONLY, since SELECT statements might also modify data.
+
 If you're using this with a version of PostgreSQL prior to 9.2, you will 
 need also to have a line like this before the above lines:
 
