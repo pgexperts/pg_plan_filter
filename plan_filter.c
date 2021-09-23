@@ -21,6 +21,29 @@
 #include "optimizer/planner.h"
 #include "utils/guc.h"
 
+#define PG13_GTE (PG_VERSION_NUM >= 130000)
+
+#if PG13_GTE
+#define PLANNER_HOOK_PARAMS \
+	Query *parse, const char *queryString \
+, int cursorOptions, ParamListInfo boundParams
+#else
+#define PLANNER_HOOK_PARAMS \
+	Query *parse \
+, int cursorOptions, ParamListInfo boundParams
+#endif
+
+#if PG13_GTE
+#define PLANNER_HOOK_ARGS \
+	parse, queryString \
+, cursorOptions, boundParams
+#else
+#define PLANNER_HOOK_ARGS \
+	parse \
+, cursorOptions, boundParams
+#endif
+
+
 PG_MODULE_MAGIC;
 
 static double statement_cost_limit = 0.0;
@@ -31,9 +54,7 @@ static bool filter_select_only = false;
 
 static planner_hook_type prev_planner_hook = NULL;
 
-static PlannedStmt *limit_func(Query *parse,
-		   int cursorOptions,
-		   ParamListInfo boundParams);
+static PlannedStmt *limit_func(PLANNER_HOOK_PARAMS);
 
 void		_PG_init(void);
 void		_PG_fini(void);
@@ -102,15 +123,15 @@ _PG_fini(void)
 }
 
 static PlannedStmt *
-limit_func(Query *parse, int cursorOptions, ParamListInfo boundParams)
+limit_func(PLANNER_HOOK_PARAMS)
 {
 	PlannedStmt *result;
 
 	/* this way we can daisy chain planner hooks if necessary */
 	if (prev_planner_hook != NULL)
-		result = (*prev_planner_hook) (parse, cursorOptions, boundParams);
+		result = (*prev_planner_hook) (PLANNER_HOOK_ARGS);
 	else
-		result = standard_planner(parse, cursorOptions, boundParams);
+		result = standard_planner(PLANNER_HOOK_ARGS);
 
     if(filter_select_only && parse->commandType != CMD_SELECT)
 		return result;
