@@ -18,6 +18,9 @@
 
 #include <float.h>
 
+#include "access/parallel.h"
+#include "access/xact.h"
+#include "executor/executor.h"
 #include "optimizer/planner.h"
 #include "utils/guc.h"
 
@@ -37,15 +40,29 @@ PG_MODULE_MAGIC;
 
 static double statement_cost_limit = 0.0;
 
+static double transaction_cost_limit = 0.0;
+
 static bool module_loaded = false;
 
 static bool filter_select_only = false;
 
+/*
+ * Estimated cost accumulated by the statements executed so far in the
+ * current transaction.  Always maintained (even with no limit set), so
+ * that enabling the limit mid-transaction still sees the full history;
+ * zeroed by plan_filter_xact_callback at end of transaction.
+ */
+static double xact_cost_total = 0.0;
+
 static planner_hook_type prev_planner_hook = NULL;
+
+static ExecutorStart_hook_type prev_ExecutorStart_hook = NULL;
 
 static PlannedStmt *limit_func(Query *parse, const char *query_string,
 							   int cursorOptions,
 							   ParamListInfo boundParams);
+static void xact_limit_func(QueryDesc *queryDesc, int eflags);
+static void plan_filter_xact_callback(XactEvent event, void *arg);
 
 void		_PG_init(void);
 
@@ -65,6 +82,20 @@ _PG_init(void)
 							 "a statement will not run.",
 							 "Zero turns this feature off.",
 							 &statement_cost_limit,
+							 0.0,
+							 0.0, DBL_MAX,
+							 PGC_SUSET,
+							 0, /* no flags required */
+							 NULL,
+							 NULL,
+							 NULL);
+
+	/* Define custom GUC variable. */
+	DefineCustomRealVariable("plan_filter.transaction_cost_limit",
+							 "Sets the maximum allowed total plan cost of "
+							 "statements executed in one transaction.",
+							 "Zero turns this feature off.",
+							 &transaction_cost_limit,
 							 0.0,
 							 0.0, DBL_MAX,
 							 PGC_SUSET,
@@ -110,9 +141,13 @@ _PG_init(void)
 	EmitWarningsOnPlaceholders("plan_filter");
 #endif
 
-	/* install the hook */
+	/* install the hooks */
 	prev_planner_hook = planner_hook;
 	planner_hook = limit_func;
+	prev_ExecutorStart_hook = ExecutorStart_hook;
+	ExecutorStart_hook = xact_limit_func;
+
+	RegisterXactCallback(plan_filter_xact_callback, NULL);
 }
 
 static PlannedStmt *
@@ -145,4 +180,72 @@ limit_func(Query *parse, const char *query_string, int cursorOptions,
 						 "\"plan_filter.statement_cost_limit\".")));
 
 	return result;
+}
+
+/*
+ * ExecutorStart hook: charge each execution's plan cost against the
+ * transaction's budget.
+ *
+ * Accounting happens here rather than in the planner hook so that every
+ * execution is counted: repeated EXECUTE of a prepared statement stops
+ * invoking the planner once a generic plan is cached, which would let a
+ * PREPARE/EXECUTE loop evade a plan-time accumulator entirely.
+ *
+ * The check runs before chaining to the rest of ExecutorStart, so a
+ * statement that busts the budget never begins executing.
+ */
+static void
+xact_limit_func(QueryDesc *queryDesc, int eflags)
+{
+	/*
+	 * Plain EXPLAIN neither consumes budget nor is refused by an exhausted
+	 * one; it stays usable for inspecting plans.  Parallel workers are
+	 * excluded because the leader already counted the plan.
+	 */
+	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY) &&
+		!IsParallelWorker() &&
+		!(filter_select_only && queryDesc->operation != CMD_SELECT))
+	{
+		xact_cost_total += queryDesc->plannedstmt->planTree->total_cost;
+
+		if (transaction_cost_limit > 0.0 &&
+			xact_cost_total > transaction_cost_limit)
+			ereport(ERROR,
+					(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+					 errmsg("transaction cost limit exceeded"),
+					 errhint("The combined plan cost of the statements "
+							 "executed so far in this transaction exceeds the "
+							 "configured limit. End the transaction, or "
+							 "increase the configuration parameter "
+							 "\"plan_filter.transaction_cost_limit\".")));
+	}
+
+	if (prev_ExecutorStart_hook)
+		(*prev_ExecutorStart_hook) (queryDesc, eflags);
+	else
+		standard_ExecutorStart(queryDesc, eflags);
+}
+
+/*
+ * Zero the transaction cost accumulator at end of transaction.  These
+ * callbacks may not raise errors; a plain assignment is safe.  There is
+ * deliberately no subtransaction callback: ROLLBACK TO SAVEPOINT does not
+ * refund cost already charged, since the limit guards resource
+ * consumption and the work was attempted.
+ */
+static void
+plan_filter_xact_callback(XactEvent event, void *arg)
+{
+	switch (event)
+	{
+		case XACT_EVENT_COMMIT:
+		case XACT_EVENT_PARALLEL_COMMIT:
+		case XACT_EVENT_ABORT:
+		case XACT_EVENT_PARALLEL_ABORT:
+		case XACT_EVENT_PREPARE:
+			xact_cost_total = 0.0;
+			break;
+		default:
+			break;
+	}
 }
