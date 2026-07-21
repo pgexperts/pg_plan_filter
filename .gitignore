@@ -9,3 +9,6 @@ regression.diffs
 regression.out
 log/
 tmp_check/
+
+# Agent-workflow spec drops (kept out of the published module)
+docs/superpowers/
