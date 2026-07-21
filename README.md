@@ -4,38 +4,69 @@ Plan Filter Module for PostgreSQL
 [![CI](https://github.com/pgexperts/pg_plan_filter/actions/workflows/ci.yml/badge.svg)](https://github.com/pgexperts/pg_plan_filter/actions/workflows/ci.yml)
 
 This loadable module will test statements against specific configured criteria
-before execution, raising an error if the criteria are violated. This 
-allows administrators to prevent execution of certain queries on 
+before execution, raising an error if the criteria are violated. This
+allows administrators to prevent execution of certain queries on
 production databases.
 
-The only criterion currently supported is the maximum allowed estimated 
-cost of the statement plan.  However, `pg_plan_filter` could be extended to
-support a number of different filters.
+The criteria are based on the planner's estimated cost. `pg_plan_filter` can
+refuse an individual statement whose plan is too expensive
+(`statement_cost_limit`), cap the combined cost of all the statements run in
+one transaction (`transaction_cost_limit`), and optionally apply the filter to
+`SELECT` statements only (`filter_select_only`). The module could be extended
+to support further kinds of filters.
 
-The module is loaded either via the `LOAD` statement or the 
-`shared_preload_libraries` setting in the `postgresql.conf` file. The latter 
-mechanism is strongly recommended - `LOAD` is only for use during development 
-or testing.
+Configuration
+-------------
 
-Also, the `statement_cost_limit` must be specified. The default limit is 0, 
-which means do not apply any filter. So a typical pair of settings in the 
-`postgresql.conf` file might be:
+All settings live under the `plan_filter.` prefix. On PostgreSQL 15 and later
+that prefix is reserved, so a misspelled setting name is reported as an error
+rather than being silently accepted as a placeholder.
+
+| Parameter | Type | Default | Who can set |
+|-----------|------|---------|-------------|
+| `plan_filter.statement_cost_limit` | real | `0` (off) | superuser (`SUSET`) |
+| `plan_filter.transaction_cost_limit` | real | `0` (off) | superuser (`SUSET`) |
+| `plan_filter.filter_select_only` | bool | `false` | superuser (`SUSET`) |
+| `plan_filter.module_loaded` | bool | `on` when loaded | read-only |
+
+Both limits default to `0`, which applies no filter; set at least one of them
+to a non-zero value for the module to do anything.
+
+### Loading the module
+
+The module is loaded either via the `LOAD` statement or the
+`shared_preload_libraries` setting in the `postgresql.conf` file. The latter
+mechanism is strongly recommended - `LOAD` is only for use during development
+or testing. A typical pair of settings in the `postgresql.conf` file might be:
 
     shared_preload_libraries = 'plan_filter'
     plan_filter.statement_cost_limit = 100000.0
 
-`filter_select_only` limits filtering to SELECT statements only. The default is false.
+### statement_cost_limit
 
-    plan_filter.filter_select_only = true
+`statement_cost_limit` refuses any single statement whose finished plan has an
+estimated total cost greater than the limit.
 
-turns it on.
-Be aware that SELECT != READONLY, since SELECT statements might also modify data.
+When the module is running with a non-zero `statement_cost_limit`, it
+will also prevent `EXPLAIN` on expensive queries. The solution would be
+to `set statement_cost_limit` temporarily to 0 and then run the `EXPLAIN`,
+like this:
+
+    BEGIN;
+    SET LOCAL plan_filter.statement_cost_limit = 0;
+    EXPLAIN select ....;
+    COMMIT;
+
+Because `statement_cost_limit` is superuser-only, this override requires a
+superuser (or a role that has been granted `SET` on the parameter).
+
+### transaction_cost_limit
 
 `transaction_cost_limit` limits the *combined* estimated cost of the
 statements executed within a single transaction, raising the same error
-class once the running total would be exceeded.  This is aimed at batch
+class once the running total would be exceeded. This is aimed at batch
 interfaces: many individually-cheap statements can no longer add up to
-unbounded work.  The default of 0 turns it off.
+unbounded work.
 
     plan_filter.transaction_cost_limit = 500000.0
 
@@ -49,28 +80,54 @@ Details of the accounting:
 - `ROLLBACK TO SAVEPOINT` does not refund cost already charged: the limit
   guards attempted resource consumption, not net effect.
 - Statements that execute without a plan — most DDL, such as `CREATE
-  INDEX` — are not counted.  Utility statements that *wrap* a query,
+  INDEX` — are not counted. Utility statements that *wrap* a query,
   however, do execute a plan and are counted: `CREATE TABLE ... AS`,
-  `CREATE MATERIALIZED VIEW`, `COPY (SELECT ...) TO`.  This mirrors
+  `CREATE MATERIALIZED VIEW`, `COPY (SELECT ...) TO`. This mirrors
   `statement_cost_limit`, which sees the same statements.
-- When `filter_select_only` is on, it applies to this limit as well.
 
-When this module is running with a non-zero `statement_cost_limit`, it 
-will also prevent `EXPLAIN` on expensive queries. The solution would be 
-to `set statement_cost_limit` temporarily to 0 and then run the `EXPLAIN`, 
-like this:
+### filter_select_only
 
-    BEGIN;
-    SET LOCAL plan_filter.statement_cost_limit = 0;
-    EXPLAIN select ....;
-    COMMIT;
+`filter_select_only` limits filtering to SELECT statements only. It applies to
+both cost limits. The default is false.
 
-As with other settings, `plan_filter.statement_cost_limit` can be set 
-per user to override the default and whatever is set in `postgresql.conf`. 
-To do this, run something like:
+    plan_filter.filter_select_only = true
 
-    ALTER USER can_run_expensive SET plan_filter.statement_cost_limit = 0;
+turns it on.
+Be aware that SELECT != READONLY, since SELECT statements might also modify data.
+
+### module_loaded
+
+`plan_filter.module_loaded` is a read-only presence signal that reads `on`
+whenever the module is active in the backend. Because the parameter exists
+only while the module is loaded, an ordinary (non-superuser) session can test
+for the guard with:
+
+    SELECT current_setting('plan_filter.module_loaded', true) IS NOT NULL
+        AS plan_filter_active;
+
+The `true` second argument makes `current_setting` return NULL — rather than
+raising an error — when the module is not loaded. `SHOW
+plan_filter.module_loaded` also works when the module is present, and errors
+otherwise. The value is a presence signal, not a switch; it cannot be changed.
+
+### Per-user overrides
+
+As with other settings, any of the `plan_filter.*` limits can be set per user
+to override the default and whatever is set in `postgresql.conf`. To do this,
+run something like:
+
+    ALTER USER can_run_expensive  SET plan_filter.statement_cost_limit = 0;
     ALTER USER only_cheap_queries SET plan_filter.statement_cost_limit = 10000;
+    ALTER USER batch_worker       SET plan_filter.transaction_cost_limit = 1000000;
+
+### Error raised on rejection
+
+When either limit rejects a statement, `pg_plan_filter` raises an error with
+SQLSTATE `54001` (`statement_too_complex`). `statement_cost_limit` uses the
+message `plan cost limit exceeded`; `transaction_cost_limit` uses `transaction
+cost limit exceeded`. Application code can catch that SQLSTATE to react — for
+example, a web layer mapping a rejected batch request to `HTTP 429 Too Many
+Requests`.
 
 Building and Installing
 -----------------------
@@ -80,7 +137,7 @@ like this:
 
     export PATH=/path/to/pgconfig/directory:$PATH
     make && make install
-    
+
 As `pg_plan_filter` is a loadable module rather than an Extension, it cannot be
 installed using PGXN or other extension-management tools.
 
@@ -126,7 +183,7 @@ layer behind an application-level limit rather than the sole defense.
 Credits
 -------
 
-This module is primarily the work of Andrew Dunstan, with support from the 
+This module is primarily the work of Andrew Dunstan, with support from the
 PostgreSQL Experts, Inc. staff.
 
-Development of the module was sponsored by [Twitch.TV](http://www.twitch.tv). 
+Development of the module was sponsored by [Twitch.TV](http://www.twitch.tv).
