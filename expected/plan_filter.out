@@ -10,9 +10,10 @@ SHOW plan_filter.module_loaded;
  on
 (1 row)
 
--- Pin both GUCs before doing anything plannable, so the suite also passes
--- on a cluster whose configuration preloads the module with a limit set.
+-- Pin the GUCs before doing anything plannable, so the suite also passes
+-- on a cluster whose configuration preloads the module with limits set.
 SET plan_filter.statement_cost_limit = 0;
+SET plan_filter.transaction_cost_limit = 0;
 SET plan_filter.filter_select_only = false;
 CREATE TABLE plan_filter_test AS
     SELECT g AS x, g % 100 AS y FROM generate_series(1, 10000) g;
@@ -71,11 +72,175 @@ UPDATE plan_filter_test SET y = y + 1;
 ERROR:  plan cost limit exceeded
 HINT:  The plan for your query shows that it would probably have an excessive run time. This may be due to a logic error in the SQL, or it may be just a very costly query. Rewrite your query or increase the configuration parameter "plan_filter.statement_cost_limit".
 ROLLBACK;
--- both GUCs are superuser-only: an unprivileged role cannot lift the limit
+-- transaction cost limit tests use their own pristine table: earlier tests
+-- leave dead tuples in plan_filter_test, and the per-statement cost here
+-- must be predictable relative to the limit (one passes, two trip it)
+SET plan_filter.statement_cost_limit = 0;
+CREATE TABLE plan_filter_xact_test AS
+    SELECT g AS x, g % 100 AS y FROM generate_series(1, 10000) g;
+ANALYZE plan_filter_xact_test;
+SET plan_filter.transaction_cost_limit = 300;
+-- each statement passes alone, the sum trips the limit
+BEGIN;
+SELECT count(*) FROM plan_filter_xact_test;
+ count 
+-------
+ 10000
+(1 row)
+
+SELECT count(*) FROM plan_filter_xact_test;
+ERROR:  transaction cost limit exceeded
+HINT:  The combined plan cost of the statements executed so far in this transaction exceeds the configured limit. End the transaction, or increase the configuration parameter "plan_filter.transaction_cost_limit".
+COMMIT;
+-- the accumulator resets after COMMIT
+BEGIN;
+SELECT count(*) FROM plan_filter_xact_test;
+ count 
+-------
+ 10000
+(1 row)
+
+COMMIT;
+-- and after an aborted transaction
+BEGIN;
+SELECT count(*) FROM plan_filter_xact_test;
+ count 
+-------
+ 10000
+(1 row)
+
+SELECT count(*) FROM plan_filter_xact_test;
+ERROR:  transaction cost limit exceeded
+HINT:  The combined plan cost of the statements executed so far in this transaction exceeds the configured limit. End the transaction, or increase the configuration parameter "plan_filter.transaction_cost_limit".
+ROLLBACK;
+SELECT count(*) FROM plan_filter_xact_test;
+ count 
+-------
+ 10000
+(1 row)
+
+-- ROLLBACK TO SAVEPOINT does not refund cost already charged
+BEGIN;
+SELECT count(*) FROM plan_filter_xact_test;
+ count 
+-------
+ 10000
+(1 row)
+
+SAVEPOINT s;
+SELECT count(*) FROM plan_filter_xact_test;
+ERROR:  transaction cost limit exceeded
+HINT:  The combined plan cost of the statements executed so far in this transaction exceeds the configured limit. End the transaction, or increase the configuration parameter "plan_filter.transaction_cost_limit".
+ROLLBACK TO s;
+SELECT count(*) FROM plan_filter_xact_test;
+ERROR:  transaction cost limit exceeded
+HINT:  The combined plan cost of the statements executed so far in this transaction exceeds the configured limit. End the transaction, or increase the configuration parameter "plan_filter.transaction_cost_limit".
+COMMIT;
+-- executions are charged, not plans: a cached generic plan still consumes
+SET plan_cache_mode = force_generic_plan;
+PREPARE q AS SELECT count(*) FROM plan_filter_xact_test;
+BEGIN;
+EXECUTE q;
+ count 
+-------
+ 10000
+(1 row)
+
+EXECUTE q;
+ERROR:  transaction cost limit exceeded
+HINT:  The combined plan cost of the statements executed so far in this transaction exceeds the configured limit. End the transaction, or increase the configuration parameter "plan_filter.transaction_cost_limit".
+COMMIT;
+DEALLOCATE q;
+RESET plan_cache_mode;
+-- Plain EXPLAIN charges nothing.  The two real SELECTs total ~378; with a
+-- 500 limit they both pass only if the three EXPLAINs between them add zero.
+-- Were EXPLAIN charged -- even if it stayed exempt from the check itself --
+-- the trailing SELECT would cross 500 and trip.
+SET plan_filter.transaction_cost_limit = 500;
+BEGIN;
+SELECT count(*) FROM plan_filter_xact_test;
+ count 
+-------
+ 10000
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM plan_filter_xact_test;
+               QUERY PLAN                
+-----------------------------------------
+ Aggregate
+   ->  Seq Scan on plan_filter_xact_test
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM plan_filter_xact_test;
+               QUERY PLAN                
+-----------------------------------------
+ Aggregate
+   ->  Seq Scan on plan_filter_xact_test
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM plan_filter_xact_test;
+               QUERY PLAN                
+-----------------------------------------
+ Aggregate
+   ->  Seq Scan on plan_filter_xact_test
+(2 rows)
+
+SELECT count(*) FROM plan_filter_xact_test;
+ count 
+-------
+ 10000
+(1 row)
+
+COMMIT;
+-- filter_select_only exempts non-SELECT statements from the transaction
+-- accounting too.  One UPDATE plans at ~164; with the limit at 100 an exempt
+-- UPDATE passes (charging nothing, so two in a row also pass), while the same
+-- UPDATE charged trips the limit on its own.
+SET plan_filter.transaction_cost_limit = 100;
+SET plan_filter.filter_select_only = true;
+BEGIN;
+UPDATE plan_filter_xact_test SET y = y;
+UPDATE plan_filter_xact_test SET y = y;
+ROLLBACK;
+SET plan_filter.filter_select_only = false;
+BEGIN;
+UPDATE plan_filter_xact_test SET y = y;
+ERROR:  transaction cost limit exceeded
+HINT:  The combined plan cost of the statements executed so far in this transaction exceeds the configured limit. End the transaction, or increase the configuration parameter "plan_filter.transaction_cost_limit".
+ROLLBACK;
+SET plan_filter.transaction_cost_limit = 0;
+DROP TABLE plan_filter_xact_test;
+-- Both limits raise SQLSTATE 54001 (statement_too_complex) -- the contract
+-- PostgREST maps to HTTP 429.  Assert it symbolically, via the condition
+-- name, so a reworded message can never mask an errcode change; the handler
+-- only catches the block if the SQLSTATE still matches.
+SET plan_filter.statement_cost_limit = 1;
+DO $$
+BEGIN
+	PERFORM count(*) FROM pg_class;
+	RAISE EXCEPTION 'statement_cost_limit did not fire';
+EXCEPTION WHEN statement_too_complex THEN
+	RAISE NOTICE 'statement_cost_limit raises SQLSTATE %', SQLSTATE;
+END $$;
+NOTICE:  statement_cost_limit raises SQLSTATE 54001
+SET plan_filter.statement_cost_limit = 0;
+SET plan_filter.transaction_cost_limit = 1;
+DO $$
+BEGIN
+	PERFORM count(*) FROM pg_class;
+	RAISE EXCEPTION 'transaction_cost_limit did not fire';
+EXCEPTION WHEN statement_too_complex THEN
+	RAISE NOTICE 'transaction_cost_limit raises SQLSTATE %', SQLSTATE;
+END $$;
+NOTICE:  transaction_cost_limit raises SQLSTATE 54001
+SET plan_filter.transaction_cost_limit = 0;
+-- all three GUCs are superuser-only: an unprivileged role cannot lift them
 CREATE ROLE regress_plan_filter_user;
 SET ROLE regress_plan_filter_user;
 SET plan_filter.statement_cost_limit = 0;
 ERROR:  permission denied to set parameter "plan_filter.statement_cost_limit"
+SET plan_filter.transaction_cost_limit = 0;
+ERROR:  permission denied to set parameter "plan_filter.transaction_cost_limit"
 SET plan_filter.filter_select_only = true;
 ERROR:  permission denied to set parameter "plan_filter.filter_select_only"
 RESET ROLE;

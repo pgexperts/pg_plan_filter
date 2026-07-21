@@ -31,6 +31,30 @@ which means do not apply any filter. So a typical pair of settings in the
 turns it on.
 Be aware that SELECT != READONLY, since SELECT statements might also modify data.
 
+`transaction_cost_limit` limits the *combined* estimated cost of the
+statements executed within a single transaction, raising the same error
+class once the running total would be exceeded.  This is aimed at batch
+interfaces: many individually-cheap statements can no longer add up to
+unbounded work.  The default of 0 turns it off.
+
+    plan_filter.transaction_cost_limit = 500000.0
+
+Details of the accounting:
+
+- Cost is charged per *execution*, so repeatedly executing a prepared
+  statement counts every execution, even after PostgreSQL switches to a
+  cached generic plan.
+- Plain `EXPLAIN` neither consumes budget nor is refused once the budget
+  is exhausted, so plans remain inspectable.
+- `ROLLBACK TO SAVEPOINT` does not refund cost already charged: the limit
+  guards attempted resource consumption, not net effect.
+- Statements that execute without a plan — most DDL, such as `CREATE
+  INDEX` — are not counted.  Utility statements that *wrap* a query,
+  however, do execute a plan and are counted: `CREATE TABLE ... AS`,
+  `CREATE MATERIALIZED VIEW`, `COPY (SELECT ...) TO`.  This mirrors
+  `statement_cost_limit`, which sees the same statements.
+- When `filter_select_only` is on, it applies to this limit as well.
+
 When this module is running with a non-zero `statement_cost_limit`, it 
 will also prevent `EXPLAIN` on expensive queries. The solution would be 
 to `set statement_cost_limit` temporarily to 0 and then run the `EXPLAIN`, 
@@ -79,11 +103,24 @@ so nothing needs to be added to `shared_preload_libraries` first.
 Warnings
 --------
 
-`statement_cost_limit` will cancel plans based on their estimated cost.  The PostgreSQL 
+Both limits cancel plans based on their estimated cost.  The PostgreSQL
 planner can and does return cost estimates which are unrelated to the actual
 query execution time.  As such, you should be prepared for "false positive"
-cancellations if you use `pg_plan_filter`, and you should set `statement_cost_limit` 
+cancellations if you use `pg_plan_filter`, and you should set the limits
 generously.
+
+More importantly, the estimate these limits compare against is computed from
+the planner cost settings — `seq_page_cost`, `cpu_tuple_cost`, the
+parallelism costs, and so on — and every one of those is `USERSET`: any role
+that can run `SET` can lower them, even to zero, and so deflate the estimated
+cost of its own statements below any limit.  The limit GUCs themselves are
+superuser-only and cannot be raised by an ordinary user, but that does not
+close this gap, because the attacker changes the number being compared rather
+than the limit.  Treat `pg_plan_filter` as a cooperative guard against
+accidental or careless load — a misconfigured ORM, a runaway report — not as
+a hard security boundary against a hostile role that controls its own
+session.  For the batch-throttling use case in particular, keep it as one
+layer behind an application-level limit rather than the sole defense.
 
 
 Credits
