@@ -38,8 +38,11 @@ statement never begins executing):
   exceeded.  Always-accumulate means `SET LOCAL` can disable the check
   but cannot erase history.
 
-Utility statements never reach the executor and are not counted — the
-same statements the per-statement limit has never seen.
+Utility statements that run without a plan (most DDL) never reach the
+executor and are not counted.  Utility statements that wrap a query
+(`CREATE TABLE ... AS`, `COPY (SELECT ...)`) do run a plan through the
+executor and are counted — the same statements the per-statement limit
+has always seen.
 
 ## State and reset
 
@@ -70,6 +73,17 @@ a savepoint stack.
    denied.
 
 The suite's post-`LOAD` pin block also pins the new GUC to 0.
+
+## Security boundary
+
+Both limits compare against the planner's *estimated* cost, which is
+computed from `USERSET` cost GUCs (`seq_page_cost`, `cpu_tuple_cost`,
+the parallelism costs).  A role that can issue `SET` can zero those and
+deflate its own estimates below any limit, so this is a cooperative
+guard against careless load, not a hard boundary against a hostile
+session.  The `PGC_SUSET` limit GUCs stop a user *raising the limit* but
+do not close this gap.  Documented in the README; the batch-throttling
+use case keeps it behind an application-level limit.
 
 ## Documentation
 
