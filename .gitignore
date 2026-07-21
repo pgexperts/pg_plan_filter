@@ -1,0 +1,11 @@
+# Build products and pg_regress leavings
+*.o
+*.so
+*.dylib
+*.bc
+.deps/
+results/
+regression.diffs
+regression.out
+log/
+tmp_check/

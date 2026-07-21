@@ -1,6 +1,8 @@
 Plan Filter Module for PostgreSQL
 =================================
 
+[![CI](https://github.com/pgexperts/pg_plan_filter/actions/workflows/ci.yml/badge.svg)](https://github.com/pgexperts/pg_plan_filter/actions/workflows/ci.yml)
+
 This loadable module will test statements against specific configured criteria
 before execution, raising an error if the criteria are violated. This 
 allows administrators to prevent execution of certain queries on 
@@ -22,17 +24,12 @@ which means do not apply any filter. So a typical pair of settings in the
     shared_preload_libraries = 'plan_filter'
     plan_filter.statement_cost_limit = 100000.0
 
-`ļimit_select_only` limits filtering to SELECT statements only. The default is false.
+`filter_select_only` limits filtering to SELECT statements only. The default is false.
 
-    plan_filter.limit_select_only = true
+    plan_filter.filter_select_only = true
 
 turns it on.
 Be aware that SELECT != READONLY, since SELECT statements might also modify data.
-
-If you're using this with a version of PostgreSQL prior to 9.2, you will 
-need also to have a line like this before the above lines:
-
-    custom_variable_classes = 'plan_filter'
 
 When this module is running with a non-zero `statement_cost_limit`, it 
 will also prevent `EXPLAIN` on expensive queries. The solution would be 
@@ -63,8 +60,21 @@ like this:
 As `pg_plan_filter` is a loadable module rather than an Extension, it cannot be
 installed using PGXN or other extension-management tools.
 
-This module has been tested on PostgreSQL 9.1.14, 9.3.6 and 9.4.1.  It should work on
-any version 9.0 or later, but has not necessarily been tested on every release.
+This module supports all PostgreSQL major versions with upstream support,
+currently 14 through 18, and requires at least 14 to build.  Each supported
+version is exercised in CI on every pull request and every push to master.
+
+Testing
+-------
+
+With the module built and installed, and a server from the same build
+running, the regression suite can be run with:
+
+    make installcheck
+
+Standard libpq environment variables (`PGHOST`, `PGPORT`, and so on) select
+the server to test against.  The test session loads the module with `LOAD`,
+so nothing needs to be added to `shared_preload_libraries` first.
 
 Warnings
 --------

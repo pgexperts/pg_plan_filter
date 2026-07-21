@@ -21,30 +21,19 @@
 #include "optimizer/planner.h"
 #include "utils/guc.h"
 
-#define PG13_GTE (PG_VERSION_NUM >= 130000)
-
-#if PG13_GTE
-#define PLANNER_HOOK_PARAMS \
-	Query *parse, const char *queryString \
-, int cursorOptions, ParamListInfo boundParams
-#else
-#define PLANNER_HOOK_PARAMS \
-	Query *parse \
-, int cursorOptions, ParamListInfo boundParams
+#if PG_VERSION_NUM < 140000
+#error "pg_plan_filter requires PostgreSQL 14 or later"
 #endif
 
-#if PG13_GTE
-#define PLANNER_HOOK_ARGS \
-	parse, queryString \
-, cursorOptions, boundParams
+/*
+ * PG_MODULE_MAGIC_EXT (PostgreSQL 18+) lets the server report the module's
+ * name and version; older releases only have the plain magic block.
+ */
+#ifdef PG_MODULE_MAGIC_EXT
+PG_MODULE_MAGIC_EXT(.name = "plan_filter", .version = "1.0.0");
 #else
-#define PLANNER_HOOK_ARGS \
-	parse \
-, cursorOptions, boundParams
-#endif
-
-
 PG_MODULE_MAGIC;
+#endif
 
 static double statement_cost_limit = 0.0;
 
@@ -54,13 +43,18 @@ static bool filter_select_only = false;
 
 static planner_hook_type prev_planner_hook = NULL;
 
-static PlannedStmt *limit_func(PLANNER_HOOK_PARAMS);
+static PlannedStmt *limit_func(Query *parse, const char *query_string,
+							   int cursorOptions,
+							   ParamListInfo boundParams);
 
 void		_PG_init(void);
-void		_PG_fini(void);
 
 /*
- * Module load callback
+ * Module load callback.
+ *
+ * There is deliberately no _PG_fini: PostgreSQL 15 removed the ability to
+ * unload a shared library, and it was not reachable in practice before
+ * that, so the hook stays installed for the life of the backend.
  */
 void
 _PG_init(void)
@@ -91,7 +85,7 @@ _PG_init(void)
 							 NULL,
 							 NULL);
 
-							/* Define custom GUC variable. */
+	/* Define custom GUC variable. */
 	DefineCustomBoolVariable("plan_filter.filter_select_only",
 							 "Limit the filter to SELECT queries "
 							 "only.",
@@ -104,36 +98,38 @@ _PG_init(void)
 							 NULL,
 							 NULL);
 
+	/*
+	 * Reserve the "plan_filter." prefix so that a misspelled setting is an
+	 * error rather than a silently-ignored placeholder that would leave the
+	 * filter turned off.  PostgreSQL 14 only has the older call, which just
+	 * warns about existing placeholders at load time.
+	 */
+#if PG_VERSION_NUM >= 150000
+	MarkGUCPrefixReserved("plan_filter");
+#else
+	EmitWarningsOnPlaceholders("plan_filter");
+#endif
+
 	/* install the hook */
 	prev_planner_hook = planner_hook;
 	planner_hook = limit_func;
-
-}
-
-/*
- * Module unload callback
- */
-void
-_PG_fini(void)
-{
-	/* Uninstall hook. */
-	planner_hook = prev_planner_hook;
-	/* reset loaded var */
-	module_loaded = false;
 }
 
 static PlannedStmt *
-limit_func(PLANNER_HOOK_PARAMS)
+limit_func(Query *parse, const char *query_string, int cursorOptions,
+		   ParamListInfo boundParams)
 {
 	PlannedStmt *result;
 
 	/* this way we can daisy chain planner hooks if necessary */
 	if (prev_planner_hook != NULL)
-		result = (*prev_planner_hook) (PLANNER_HOOK_ARGS);
+		result = (*prev_planner_hook) (parse, query_string, cursorOptions,
+									   boundParams);
 	else
-		result = standard_planner(PLANNER_HOOK_ARGS);
+		result = standard_planner(parse, query_string, cursorOptions,
+								  boundParams);
 
-    if(filter_select_only && parse->commandType != CMD_SELECT)
+	if (filter_select_only && parse->commandType != CMD_SELECT)
 		return result;
 
 	if (statement_cost_limit > 0.0 &&
@@ -141,12 +137,12 @@ limit_func(PLANNER_HOOK_PARAMS)
 		ereport(ERROR,
 				(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
 				 errmsg("plan cost limit exceeded"),
-			  errhint("The plan for your query shows that it would probably "
-					  "have an excessive run time. This may be due to a "
-					  "logic error in the SQL, or it maybe just a very "
-					  "costly query. Rewrite your query or increase the "
-					  "configuration parameter "
-					  "\"plan_filter.statement_cost_limit\".")));
+				 errhint("The plan for your query shows that it would probably "
+						 "have an excessive run time. This may be due to a "
+						 "logic error in the SQL, or it may be just a very "
+						 "costly query. Rewrite your query or increase the "
+						 "configuration parameter "
+						 "\"plan_filter.statement_cost_limit\".")));
 
 	return result;
 }
