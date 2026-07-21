@@ -8,9 +8,9 @@ before execution, raising an error if the criteria are violated. This
 allows administrators to prevent execution of certain queries on 
 production databases.
 
-The only criterion currently supported is the maximum allowed estimated 
-cost of the statement plan.  However, `pg_plan_filter` could be extended to
-support a number of different filters.
+Two criteria are supported: the estimated cost of an individual statement's
+plan, and the combined estimated cost of all the statements in a transaction.
+`pg_plan_filter` could be extended to support other kinds of filters.
 
 The module is loaded either via the `LOAD` statement or the 
 `shared_preload_libraries` setting in the `postgresql.conf` file. The latter 
