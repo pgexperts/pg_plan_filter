@@ -1,0 +1,124 @@
+# CI for pg_plan_filter: build with warnings-as-errors and run the
+# regression suite against every supported PostgreSQL major version, plus a
+# static-analysis pass and a report-only benchmark.
+#
+# The test job builds its own throwaway cluster (initdb into /tmp) rather
+# than using the Debian-packaged one so that the server, headers, and
+# pg_regress all come from the same pgdg major version.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Nothing here needs to write to the repository.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: PostgreSQL ${{ matrix.pg }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [14, 15, 16, 17, 18]
+    env:
+      PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL ${{ matrix.pg }}
+        run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y --no-install-recommends \
+            postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }}
+
+      - name: Build (warnings are errors)
+        run: make PG_CONFIG="$PG_CONFIG" COPT=-Werror
+
+      - name: Install
+        run: sudo make install PG_CONFIG="$PG_CONFIG"
+
+      - name: Regression tests
+        run: |
+          PGBIN=$("$PG_CONFIG" --bindir)
+          "$PGBIN/initdb" -D /tmp/pgdata -A trust
+          {
+            echo "port = 55432"
+            echo "unix_socket_directories = '/tmp'"
+          } >> /tmp/pgdata/postgresql.conf
+          "$PGBIN/pg_ctl" -D /tmp/pgdata -l /tmp/pg.log start
+          PGHOST=/tmp PGPORT=55432 make installcheck PG_CONFIG="$PG_CONFIG"
+
+      - name: Show regression diffs
+        if: failure()
+        run: |
+          cat regression.diffs 2>/dev/null || true
+          tail -50 /tmp/pg.log 2>/dev/null || true
+
+  lint:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cppcheck and PostgreSQL headers
+        run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y --no-install-recommends \
+            cppcheck postgresql-server-dev-18
+
+      - name: cppcheck
+        # Findings inside the PostgreSQL headers themselves are suppressed;
+        # only findings in this module's code fail the job.
+        run: |
+          cppcheck --std=c99 --quiet --enable=warning,portability \
+            --error-exitcode=2 --inline-suppr \
+            --suppress='*:*/postgresql/*' \
+            -I "$(/usr/lib/postgresql/18/bin/pg_config --includedir-server)" \
+            plan_filter.c
+
+  # Report-only: shared CI runners are too noisy to gate on raw benchmark
+  # numbers, so this job never fails the pipeline.  Results land in the job
+  # summary and are uploaded as an artifact for trend-tracking.
+  benchmark:
+    name: Benchmark (report only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 18
+        run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y --no-install-recommends \
+            postgresql-18 postgresql-server-dev-18
+
+      - name: Build and install
+        run: |
+          make PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config
+          sudo make install PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config
+
+      - name: Run benchmark
+        # pipefail so a bench failure fails this (non-gating) job visibly
+        # instead of publishing an empty results file.
+        run: |
+          set -o pipefail
+          PGBIN=$(/usr/lib/postgresql/18/bin/pg_config --bindir) \
+            ./bench/run.sh | tee bench-results.txt
+
+      - name: Publish summary
+        run: |
+          {
+            echo '### plan_filter benchmark (report-only)'
+            echo '```'
+            cat bench-results.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ github.sha }}
+          path: bench-results.txt
