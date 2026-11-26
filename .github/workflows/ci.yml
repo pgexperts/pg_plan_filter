@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: [14, 15, 16, 17, 18]
+        pg: [14, 15, 16, 17, 18, 19]
     env:
       PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
     steps:
