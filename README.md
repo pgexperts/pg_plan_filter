@@ -141,9 +141,8 @@ like this:
 As `pg_plan_filter` is a loadable module rather than an Extension, it cannot be
 installed using PGXN or other extension-management tools.
 
-This module supports all PostgreSQL major versions with upstream support,
-currently 14 through 18, and requires at least 14 to build.  Each supported
-version is exercised in CI on every pull request and every push to master.
+This module requires PostgreSQL 14 or later. CI tests PostgreSQL 14 through
+19 on every pull request and every push to master.
 
 Testing
 -------

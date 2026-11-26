@@ -60,7 +60,11 @@ static ExecutorStart_hook_type prev_ExecutorStart_hook = NULL;
 
 static PlannedStmt *limit_func(Query *parse, const char *query_string,
 							   int cursorOptions,
+#if PG_VERSION_NUM >= 190000
+							   ParamListInfo boundParams, ExplainState *es);
+#else
 							   ParamListInfo boundParams);
+#endif
 static void xact_limit_func(QueryDesc *queryDesc, int eflags);
 static void plan_filter_xact_callback(XactEvent event, void *arg);
 
@@ -152,17 +156,20 @@ _PG_init(void)
 
 static PlannedStmt *
 limit_func(Query *parse, const char *query_string, int cursorOptions,
+#if PG_VERSION_NUM >= 190000
+		   ParamListInfo boundParams, ExplainState *es)
+#else
 		   ParamListInfo boundParams)
+#endif
 {
+	planner_hook_type next_planner = prev_planner_hook ? prev_planner_hook : standard_planner;
 	PlannedStmt *result;
 
-	/* this way we can daisy chain planner hooks if necessary */
-	if (prev_planner_hook != NULL)
-		result = (*prev_planner_hook) (parse, query_string, cursorOptions,
-									   boundParams);
-	else
-		result = standard_planner(parse, query_string, cursorOptions,
-								  boundParams);
+#if PG_VERSION_NUM >= 190000
+	result = next_planner(parse, query_string, cursorOptions, boundParams, es);
+#else
+	result = next_planner(parse, query_string, cursorOptions, boundParams);
+#endif
 
 	if (filter_select_only && parse->commandType != CMD_SELECT)
 		return result;
